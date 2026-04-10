@@ -1,109 +1,58 @@
 const express = require('express')
-const axios = require('axios')
-const ipRangeCheck = require('ip-range-check')
 const { GoogleAuth } = require('google-auth-library')
 
 const app = express()
 app.use(express.json())
 
-// =========================
-// 🔐 GOOGLE AUTH
-// =========================
+// 🔐 GOOGLE AUTH (ключ який ти залив)
 const auth = new GoogleAuth({
-    keyFile: './keys/integrity.json',
+    keyFile: './keys/integrity.json', // 📍 СЮДИ ТИ ВЖЕ ПОКЛАВ ФАЙЛ
     scopes: ['https://www.googleapis.com/auth/playintegrity']
 })
 
-// =========================
-// 🔥 GOOGLE IP
-// =========================
-const GOOGLE_IP_RANGES = [
-    "34.0.0.0/8",
-    "35.0.0.0/8",
-    "66.249.64.0/19",
-    "64.233.160.0/19",
-    "8.8.8.0/24"
-]
+// 🔥 ТВОЄ PACKAGE NAME (ВАЖЛИВО)
+const PACKAGE_NAME = "com.casual.memory.prismtwins"
 
 // =========================
-// 🔥 BAD DEVICES
+// 🔐 VERIFY INTEGRITY TOKEN
 // =========================
-const BAD_DEVICES = [
-    "sdk",
-    "emulator",
-    "generic",
-    "x86",
-    "test-keys",
-    "genymotion"
-]
-
-// =========================
-// 🔐 VERIFY INTEGRITY
-// =========================
-async function verifyIntegrity(token) {
+async function verifyIntegrityToken(token) {
     try {
         const client = await auth.getClient()
 
         const response = await client.request({
-            url: `https://playintegrity.googleapis.com/v1/com.casual.memory.prismtwins:decodeIntegrityToken`,
+            url: `https://playintegrity.googleapis.com/v1/${PACKAGE_NAME}:decodeIntegrityToken`,
             method: 'POST',
             data: {
                 integrity_token: token
             }
         })
 
-        const payload = response.data.tokenPayloadExternal
-
-        const device = payload.deviceIntegrity || []
-        const app = payload.appIntegrity || {}
-
-        const valid =
-            device.includes("MEETS_DEVICE_INTEGRITY") &&
-            app.appRecognitionVerdict === "PLAY_RECOGNIZED"
-
-        return valid
-
+        return response.data
     } catch (e) {
-        console.log("Integrity error:", e.message)
-        return false
+        console.log("❌ Integrity verify error:", e.message)
+        return null
     }
 }
 
 // =========================
-// 🔥 MAIN FLOW
+// 🚀 MAIN FLOW
 // =========================
 app.post('/flow', async (req, res) => {
 
-    const rawIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || ""
-    const ip = rawIp.split(',')[0].trim()
-
     const {
         device = "",
-        userAgent = "",
+        brand = "",
+        sdk = 0,
+        isEmulator = false,
         integrityToken = ""
     } = req.body
 
-    let isp = ""
+    let integrityData = null
 
-    // =========================
-    // 🌐 IP INFO
-    // =========================
-    try {
-        const ipData = await axios.get(`https://ipapi.co/${ip}/json/`, {
-            timeout: 2000
-        })
-        isp = ipData.data.org || ""
-    } catch (e) {
-        console.log("IP API error:", e.message)
-    }
-
-    // =========================
-    // 🔐 INTEGRITY CHECK
-    // =========================
-    let integrityValid = false
-
-    if (integrityToken) {
-        integrityValid = await verifyIntegrity(integrityToken)
+    // 🔐 1. VERIFY TOKEN
+    if (integrityToken && integrityToken.length > 20) {
+        integrityData = await verifyIntegrityToken(integrityToken)
     }
 
     // =========================
@@ -111,56 +60,59 @@ app.post('/flow', async (req, res) => {
     // =========================
     let risk = 0
 
-    if (!integrityValid) {
-        risk += 80
-        console.log("⚠️ Bad Integrity")
+    // 🤖 emulator (з клієнта)
+    if (isEmulator) {
+        risk += 60
+        console.log("⚠️ Emulator flag")
     }
 
-    if (ipRangeCheck(ip, GOOGLE_IP_RANGES)) {
-        risk += 70
-        console.log("⚠️ Google IP:", ip)
-    }
-
-    if (isp.includes("Google")) {
-        risk += 50
-        console.log("⚠️ Google ISP:", isp)
-    }
+    // 📱 device
+    const d = device.toLowerCase()
 
     if (
-        userAgent.includes("Windows") ||
-        userAgent.includes("Mac") ||
-        userAgent.includes("X11")
+        d.includes("sdk") ||
+        d.includes("emulator") ||
+        d.includes("generic") ||
+        d.includes("x86")
     ) {
-        risk += 40
-        console.log("⚠️ Desktop:", userAgent)
+        risk += 60
+        console.log("⚠️ Fake device:", device)
     }
 
-    const lowerDevice = device.toLowerCase()
+    // 🔐 integrity verdict
+    if (integrityData) {
+        try {
+            const verdict =
+                integrityData.tokenPayloadExternal?.deviceIntegrity?.deviceRecognitionVerdict || []
 
-    if (BAD_DEVICES.some(d => lowerDevice.includes(d))) {
-        risk += 80
-        console.log("⚠️ Emulator:", device)
-    }
+            console.log("🔐 Integrity verdict:", verdict)
 
-    if (
-        device.includes("Pixel") ||
-        device.includes("Nexus")
-    ) {
+            if (!verdict.includes("MEETS_DEVICE_INTEGRITY")) {
+                risk += 80
+                console.log("❌ Device NOT trusted")
+            }
+
+        } catch (e) {
+            console.log("❌ Parse integrity error")
+            risk += 40
+        }
+    } else {
+        // 🔥 якщо нема токена — трохи ризик
         risk += 20
     }
 
     // =========================
     // 🚫 BLOCK
     // =========================
-    if (risk >= 60) {
-        console.log("❌ GAME:", ip, "risk:", risk)
+    if (risk >= 80) {
+        console.log("❌ WHITE (blocked)", device, "risk:", risk)
         return res.json({ action: "WHITE" })
     }
 
     // =========================
     // ✅ OFFER
     // =========================
-    console.log("✅ OFFER:", ip, "risk:", risk)
+    console.log("✅ OFFER", device, "risk:", risk)
 
     return res.json({
         action: "OFFER",
