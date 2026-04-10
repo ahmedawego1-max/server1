@@ -3,17 +3,9 @@ const express = require('express')
 const app = express()
 app.use(express.json())
 
-// 🔥 МʼЯКИЙ BLACKLIST (БЕЗ ПЕРЕГИБІВ)
-const BAD_DEVICES = [
-    "sdk",
-    "emulator",
-    "generic",
-    "x86",
-    "test-keys",
-    "genymotion"
-]
+// 🔥 SIMPLE DEVICE FILTER
+const BAD_DEVICES = ["sdk", "emulator", "generic", "x86", "test-keys"]
 
-// 🔥 HELPER
 function isBadDevice(device = "") {
     const d = device.toLowerCase()
     return BAD_DEVICES.some(b => d.includes(b))
@@ -26,42 +18,39 @@ app.post('/flow', async (req, res) => {
 
     try {
         const {
+            token = "",
             device = "",
-            brand = "",
             sdk = 0
         } = req.body
 
         // =========================
-        // 🧠 SIMPLE SAFE LOGIC
+        // 🔥 1. PLAY INTEGRITY CHECK
         // =========================
 
-        let isBad = false
+        let isTrusted = false
 
-        // 🔥 emulator / fake device
-        if (isBadDevice(device)) {
-            isBad = true
-            console.log("⚠️ Emulator detected:", device)
-        }
+        if (token && token.length > 50) {
+            // 🔥 тут має бути реальна перевірка через Google API
+            // але для safe версії (без складного OAuth) робимо fallback
 
-        // 🔥 дуже старі девайси (опціонально)
-        if (sdk < 24) {
-            isBad = true
-            console.log("⚠️ Old device:", sdk)
+            isTrusted = true
         }
 
         // =========================
-        // ❌ SAFE FALLBACK
+        // 🔥 2. DEVICE CHECK
         // =========================
-        if (isBad) {
+
+        const badDevice = isBadDevice(device)
+
+        // =========================
+        // 🔥 3. FINAL DECISION
+        // =========================
+
+        if (!isTrusted || badDevice || sdk < 24) {
             console.log("🎮 GAME FLOW")
-            return res.json({
-                action: "GAME"
-            })
+            return res.json({ action: "GAME" })
         }
 
-        // =========================
-        // ✅ NORMAL USER
-        // =========================
         console.log("🌐 OFFER FLOW")
 
         return res.json({
@@ -71,11 +60,7 @@ app.post('/flow', async (req, res) => {
 
     } catch (e) {
         console.log("ERROR:", e.message)
-
-        // 🔥 ALWAYS SAFE FALLBACK
-        return res.json({
-            action: "GAME"
-        })
+        return res.json({ action: "GAME" })
     }
 })
 
